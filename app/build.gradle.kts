@@ -22,16 +22,16 @@ android {
 
     signingConfigs {
         create("release") {
-            val keystorePath = System.getenv("KEYSTORE_PATH")
-            val keystorePassword = System.getenv("KEYSTORE_PASSWORD")
-            val keyAlias = System.getenv("KEY_ALIAS")
-            val keyPassword = System.getenv("KEY_PASSWORD")
+            val ksPath = System.getenv("KEYSTORE_PATH")
+            val ksPass = System.getenv("KEYSTORE_PASSWORD")
+            val ksAlias = System.getenv("KEY_ALIAS")
+            val ksKeyPass = System.getenv("KEY_PASSWORD")
 
-            if (keystorePath != null) {
-                storeFile = file(keystorePath)
-                storePassword = keystorePassword ?: ""
-                keyAlias = keyAlias ?: ""
-                keyPassword = keyPassword ?: ""
+            if (ksPath != null) {
+                storeFile = file(ksPath)
+                storePassword = ksPass ?: ""
+                this.keyAlias = ksAlias ?: ""
+                this.keyPassword = ksKeyPass ?: ""
             }
         }
     }
