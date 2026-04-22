@@ -22,7 +22,7 @@ android {
 
     signingConfigs {
         create("release") {
-            val storeFilePath = System.getenv("KEYSTORE_PATH") ?: "release.keystore"
+            val storeFilePath = System.getenv("KEYSTORE_PATH") ?: "../release.keystore"
             storeFile = file(storeFilePath)
             storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "phpserver2024"
             keyAlias = System.getenv("KEY_ALIAS") ?: "phpserver"
