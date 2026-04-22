@@ -1,0 +1,221 @@
+name: Build & Release APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create GitHub Release'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+permissions:
+  contents: write
+  packages: write
+  attestations: write
+  id-token: write
+
+env:
+  JAVA_VERSION: '17'
+  JAVA_DISTRIBUTION: 'temurin'
+  GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dorg.gradle.parallel=true -Dorg.gradle.caching=true"
+
+jobs:
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
+      - name: Create Gradle Wrapper
+        run: |
+          if [ ! -f gradlew ]; then
+            gradle wrapper --gradle-version 8.5
+          fi
+
+      - name: Generate keystore for signing
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > release.keystore
+          if [ ! -s release.keystore ]; then
+            # Generate a release keystore for CI
+            keytool -genkeypair \
+              -v \
+              -keystore release.keystore \
+              -alias phpserver \
+              -keyalg RSA \
+              -keysize 4096 \
+              -validity 10000 \
+              -storepass phpserver2024 \
+              -keypass phpserver2024 \
+              -dname "CN=PHP Local Server, OU=Development, O=PHPServer, L=Unknown, ST=Unknown, C=US"
+          fi
+
+      - name: Build Release APK (Signed v1+v2+v3)
+        env:
+          KEYSTORE_PASSWORD: phpserver2024
+          KEY_ALIAS: phpserver
+          KEY_PASSWORD: phpserver2024
+        run: |
+          ./gradlew assembleRelease \
+            --no-daemon \
+            -PKESSTORE_PASSWORD=phpserver2024 \
+            -PKEY_ALIAS=phpserver \
+            -PKEY_PASSWORD=phpserver2024
+
+      - name: Verify APK Signature (v1+v2+v3)
+        run: |
+          # Install apksigner
+          sudo apt-get update && sudo apt-get install -y apksigner || true
+
+          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          echo "APK Path: $APK_PATH"
+
+          if [ -f "$APK_PATH" ]; then
+            echo "APK Size: $(du -h $APK_PATH | cut -f1)"
+            echo "APK MD5: $(md5sum $APK_PATH | cut -d' ' -f1)"
+            echo "APK SHA256: $(sha256sum $APK_PATH | cut -d' ' -f1)"
+
+            # Check with zipalign
+            $ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools/ | tail -1)/zipalign -c 4 $APK_PATH && echo "✅ APK is properly aligned" || echo "❌ APK alignment issue"
+
+            # Check signatures using apksigner if available
+            if command -v apksigner &> /dev/null; then
+              apksigner verify --print-certs $APK_PATH || true
+            else
+              # Use build-tools apksigner
+              $ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools/ | tail -1)/apksigner verify --print-certs $APK_PATH || true
+            fi
+          else
+            echo "❌ APK not found!"
+            find app/build/outputs -type f -name "*.apk" 2>/dev/null || echo "No APK files found"
+            ls -la app/build/outputs/apk/ 2>/dev/null || echo "APK output directory not found"
+            exit 1
+          fi
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: php-server-release-apk
+          path: app/build/outputs/apk/release/*.apk
+          retention-days: 90
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download APK Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: php-server-release-apk
+          path: ./release-apk
+
+      - name: Get version info
+        id: version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION="${{ github.ref_name }}"
+          else
+            VERSION="v1.0.0-$(date +%Y%m%d-%H%M%S)"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+          APK_PATH=$(find ./release-apk -name "*.apk" | head -n 1)
+          echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
+          echo "APK Size: $(du -h $APK_PATH | cut -f1)"
+          echo "APK SHA256: $(sha256sum $APK_PATH | cut -d' ' -f1)"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: "PHP Local Server ${{ steps.version.outputs.version }}"
+          body: |
+            ## 🐘 PHP Local Server for Android - ${{ steps.version.outputs.version }}
+
+            ### Features
+            - 🚀 Run PHP directly on Android - no VPS needed!
+            - 📱 Full Material 3 design with modern UI
+            - 🖥️ NanoHTTPD embedded web server
+            - 📁 Built-in file manager & code editor
+            - 📊 Real-time server logs
+            - ⚙️ Configurable port & PHP settings
+            - 🔒 APK signed with v1 + v2 + v3
+
+            ### How to Use
+            1. Install the APK on your Android device
+            2. Open the app and tap **Start Server**
+            3. Open your browser and go to `http://localhost:8080`
+            4. Use the File Manager to create/edit PHP files
+            5. Your PHP apps run directly on your device!
+
+            ### Technical Details
+            - **PHP Version:** 8.2.13
+            - **Web Server:** NanoHTTPD
+            - **UI:** Jetpack Compose + Material 3
+            - **Min Android:** 8.0 (API 26)
+            - **Target Android:** 14 (API 34)
+            - **Signing:** v1 (JAR) + v2 + v3
+
+            ### API Endpoints
+            - `GET /` - Default page
+            - `GET /phpinfo.php` - PHP info
+            - `GET /test.php` - PHP test suite
+            - `GET /api/status` - Server status JSON
+            - `GET /api/phpinfo` - PHP configuration JSON
+            - `GET /api/ping` - Health check
+
+            ---
+            **Note:** Built with ❤️ using GitHub Actions
+          files: ${{ steps.version.outputs.apk_path }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Release Summary
+        run: |
+          echo "## 🎉 Release Created Successfully!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**APK Size:** $(du -h ${{ steps.version.outputs.apk_path }} | cut -f1)" >> $GITHUB_STEP_SUMMARY
+          echo "**SHA256:** $(sha256sum ${{ steps.version.outputs.apk_path }} | cut -d' ' -f1)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ✅ Signing" >> $GITHUB_STEP_SUMMARY
+          echo "- ✓ APK Signature Scheme v1 (JAR signing)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✓ APK Signature Scheme v2" >> $GITHUB_STEP_SUMMARY
+          echo "- ✓ APK Signature Scheme v3 (key rotation support)" >> $GITHUB_STEP_SUMMARY

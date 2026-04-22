@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <files-path name="www" path="www/" />
+    <files-path name="php" path="php/" />
+    <cache-path name="cache" path="." />
+    <external-files-path name="external" path="." />
+    <root-path name="root" path="." />
+</paths>
