@@ -1,14 +1,14 @@
 plugins {
-    alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
 }
 
 android {
-    namespace = "com.phpserver.android"
+    namespace = "com.pocketphp"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.phpserver.android"
+        applicationId = "com.pocketphp"
         minSdk = 26
         targetSdk = 34
         versionCode = 1
@@ -22,11 +22,17 @@ android {
 
     signingConfigs {
         create("release") {
-            val storeFilePath = System.getenv("KEYSTORE_PATH") ?: "../release.keystore"
-            storeFile = file(storeFilePath)
-            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "phpserver2024"
-            keyAlias = System.getenv("KEY_ALIAS") ?: "phpserver"
-            keyPassword = System.getenv("KEY_PASSWORD") ?: "phpserver2024"
+            val keystorePath = System.getenv("KEYSTORE_PATH")
+            val keystorePassword = System.getenv("KEYSTORE_PASSWORD")
+            val keyAlias = System.getenv("KEY_ALIAS")
+            val keyPassword = System.getenv("KEY_PASSWORD")
+
+            if (keystorePath != null) {
+                storeFile = file(keystorePath)
+                storePassword = keystorePassword ?: ""
+                keyAlias = keyAlias ?: ""
+                keyPassword = keyPassword ?: ""
+            }
         }
     }
 
@@ -34,11 +40,11 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("release")
         }
         debug {
             isMinifyEnabled = false
@@ -67,31 +73,45 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
-
-    applicationVariants.all {
-        outputs.all {
-            (this as com.android.build.gradle.internal.api.ApkVariantOutputImpl).outputFileName =
-                "php-server-${versionName}-${versionCode}.apk"
-        }
-    }
 }
 
 dependencies {
-    implementation(libs.core.ktx)
-    implementation(libs.lifecycle.runtime.ktx)
-    implementation(libs.lifecycle.service)
-    implementation(libs.lifecycle.viewmodel.compose)
-    implementation(libs.activity.compose)
-    implementation(platform(libs.compose.bom))
-    implementation(libs.ui)
-    implementation(libs.ui.graphics)
-    implementation(libs.ui.tooling.preview)
-    implementation(libs.material3)
-    implementation(libs.material.icons.extended)
-    implementation(libs.navigation.compose)
-    implementation(libs.nanohttpd)
-    implementation(libs.kotlinx.coroutines.android)
+    // Core Android
+    implementation("androidx.core:core-ktx:1.12.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
+    implementation("androidx.activity:activity-compose:1.8.2")
 
-    debugImplementation(libs.ui.tooling)
-    debugImplementation(libs.ui.test.manifest)
+    // Compose BOM
+    implementation(platform("androidx.compose:compose-bom:2024.01.00"))
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-graphics")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
+
+    // Navigation
+    implementation("androidx.navigation:navigation-compose:2.7.6")
+
+    // Lifecycle
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
+
+    // NanoHTTPD - Web server
+    implementation("org.nanohttpd:nanohttpd:2.3.1")
+
+    // OkHttp - HTTP client
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    // Gson - JSON
+    implementation("com.google.code.gson:gson:2.10.1")
+
+    // Coroutines
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+
+    // DataStore preferences
+    implementation("androidx.datastore:datastore-preferences:1.0.0")
+
+    // Debug
+    debugImplementation("androidx.compose.ui:ui-tooling")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

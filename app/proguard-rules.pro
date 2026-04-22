@@ -1,6 +1,7 @@
 # Add project specific ProGuard rules here.
 -keep class org.nanohttpd.** { *; }
--dontwarn org.nanohttpd.**
+-keep class com.pocketphp.server.** { *; }
+-keep class com.pocketphp.tunnel.** { *; }
 -keepattributes *Annotation*
 -keepattributes SourceFile,LineNumberTable
--renamesourcefileattribute SourceFile
+-dontwarn org.nanohttpd.**
