@@ -28,7 +28,7 @@ android {
             val ksKeyPass = System.getenv("KEY_PASSWORD")
 
             if (ksPath != null) {
-                storeFile = file(ksPath)
+                storeFile = rootProject.file(ksPath)
                 storePassword = ksPass ?: ""
                 this.keyAlias = ksAlias ?: ""
                 this.keyPassword = ksKeyPass ?: ""

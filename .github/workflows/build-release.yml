@@ -81,6 +81,7 @@ jobs:
 
       - name: Build Release APK (Signed v1+v2+v3)
         env:
+          KEYSTORE_PATH: release.keystore
           KEYSTORE_PASSWORD: phpserver2024
           KEY_ALIAS: phpserver
           KEY_PASSWORD: phpserver2024
