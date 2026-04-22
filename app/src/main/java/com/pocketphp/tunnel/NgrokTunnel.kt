@@ -169,7 +169,7 @@ class NgrokTunnel(
             connection.disconnect()
 
             // Parse JSON response to find public_url
-            val regex = Regex(""public_url"\\s*:\\s*"([^"]+)"")
+            val regex = Regex(""""public_url"\s*:\s*"([^"]+)"""")
             regex.find(response)?.groupValues?.getOrNull(1)
         } catch (e: Exception) {
             null

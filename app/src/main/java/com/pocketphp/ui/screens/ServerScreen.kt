@@ -77,7 +77,7 @@ fun ServerScreen(
                 Icon(
                     imageVector = when (serverStatus) {
                         PhpHttpServer.ServerStatus.RUNNING -> Icons.Default.CheckCircle
-                        PhpHttpServer.ServerStatus.STARTING -> Icons.Default.Loading
+                        PhpHttpServer.ServerStatus.STARTING -> Icons.Default.Refresh
                         PhpHttpServer.ServerStatus.ERROR -> Icons.Default.Error
                         else -> Icons.Default.StopCircle
                     },

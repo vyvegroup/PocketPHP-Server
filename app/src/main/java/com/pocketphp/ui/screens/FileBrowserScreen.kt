@@ -131,7 +131,7 @@ fun FileBrowserScreen(serverController: ServerController) {
                             }
                         }
                     )
-                    HorizontalDivider()
+                    Divider()
                 }
             }
         }

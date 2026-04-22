@@ -157,8 +157,8 @@ class PhpHttpServer(
             "SERVER_PORT" to port.toString(),
             "SERVER_ADDR" to "127.0.0.1",
             "HTTP_HOST" to "localhost:$port",
-            "HTTP_ACCEPT" to session.headers.get("accept") ?: "*/*",
-            "HTTP_USER_AGENT" to session.headers.get("user-agent") ?: "PocketPHP/1.0"
+            "HTTP_ACCEPT" to (session.headers["accept"] ?: "*/*"),
+            "HTTP_USER_AGENT" to (session.headers["user-agent"] ?: "PocketPHP/1.0")
         )
 
         // Add route params as GET variables
@@ -169,12 +169,12 @@ class PhpHttpServer(
         // Handle POST data
         var postData: String? = null
         if (session.method == Method.POST || session.method == Method.PUT) {
-            val contentLength = session.headers.get("content-length", "0")
+            val contentLength = session.headers["content-length"] ?: "0"
             if (contentLength.toIntOrNull()?.let { it > 0 } == true) {
                 val buf = ByteArrayOutputStream()
                 session.inputStream?.copyTo(buf)
                 postData = buf.toString("UTF-8")
-                serverVars["CONTENT_TYPE"] = session.headers.get("content-type", "application/x-www-form-urlencoded")
+                serverVars["CONTENT_TYPE"] = session.headers["content-type"] ?: "application/x-www-form-urlencoded"
                 serverVars["CONTENT_LENGTH"] = contentLength
             }
         }

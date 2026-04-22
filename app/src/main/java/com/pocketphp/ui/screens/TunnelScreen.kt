@@ -69,7 +69,7 @@ fun TunnelScreen(
                     Icon(
                         imageVector = when (tunnelState) {
                             TunnelState.CONNECTED -> Icons.Default.CloudDone
-                            TunnelState.STARTING -> Icons.Default.Loading
+                            TunnelState.STARTING -> Icons.Default.Refresh
                             TunnelState.ERROR -> Icons.Default.Error
                             else -> Icons.Default.CloudOff
                         },
