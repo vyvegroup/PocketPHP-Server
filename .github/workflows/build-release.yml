@@ -52,194 +52,157 @@ jobs:
             gradle wrapper --gradle-version 8.5
           fi
 
-      # ====== Download and Bundle PHP 8.3 for Android ======
-      - name: Download PHP 8.3 (ARM64) from Termux
+      # ====== Download and Bundle PHP from Termux ======
+      - name: Download PHP (ARM64) from Termux
+        env:
+          TERMUX_INDEX: "https://packages.termux.dev/apt/termux-main/dists/stable/main/binary-aarch64/Packages.gz"
         run: |
           sudo apt-get install -y xz-utils zstd patchelf 2>/dev/null || true
           
           WORKDIR=/tmp/php-build
-          rm -rf "$WORKDIR" && mkdir -p "$WORKDIR"/{src,tmp,bin,lib}
+          rm -rf "$WORKDIR" && mkdir -p "$WORKDIR"/{tmp,bin,lib}
           cd "$WORKDIR"
+          BASE_URL="https://packages.termux.dev/apt/termux-main"
           
-          ARCH="aarch64"
-          TERMUX_REPO="https://packages.termux.dev/apt/termux-main/pool/main"
+          echo "=== Resolving PHP packages from Termux index ==="
           
-          echo "=== Downloading PHP 8.3 and dependencies ==="
+          # Download and parse the package index
+          curl -fsSL --max-time 60 "$TERMUX_INDEX" | gunzip > packages.txt 2>/dev/null
           
-          # Function to find and download a package
-          download_pkg() {
-            local pkg="$1"
-            local letter="${pkg:0:1}"
-            echo "  -> Looking for $pkg ($ARCH)..."
-            
-            # Scrape the package directory page
-            local page
-            page=$(curl -fsSL --max-time 30 "$TERMUX_REPO/$letter/$pkg/" 2>/dev/null)
-            if [ -z "$page" ]; then
-              echo "     WARNING: Could not fetch package listing for $pkg"
-              return 1
-            fi
-            
-            # Find the .deb filename matching our arch
-            local deb
-            deb=$(echo "$page" | grep -oP "${pkg}_[0-9][^\"_]*_${ARCH}\.deb" | sort -V | tail -1)
-            
-            if [ -z "$deb" ]; then
-              echo "     WARNING: No $deb found for $pkg"
-              return 1
-            fi
-            
-            local url="$TERMUX_REPO/$letter/$pkg/$deb"
-            echo "     Downloading: $deb"
-            curl -fsSL --max-time 120 "$url" -o "tmp/$deb" || {
-              echo "     ERROR: Download failed"
-              return 1
-            }
-            echo "     OK: $(du -h tmp/$deb | cut -f1)"
-            return 0
-          }
+          # Python script to resolve deps and download
+          python3 << 'PYEOF'
+          import os, re, subprocess, sys
           
-          # Download essential packages
-          download_pkg "libtermux-exec" || true
-          download_pkg "libc++" || true
-          download_pkg "libandroid-support" || true
-          download_pkg "libiconv" || true
-          download_pkg "libxml2" || true
-          download_pkg "liblzma" || true
-          download_pkg "zlib" || true
-          download_pkg "openssl" || true
-          download_pkg "libsqlite" || true
-          download_pkg "bzip2" || true
-          download_pkg "libcurl" || true
-          download_pkg "oniguruma" || true
-          download_pkg "readline" || true
-          download_pkg "libffi" || true
-          download_pkg "pcre2" || true
-          download_pkg "ncurses" || true
-          download_pkg "libprotobuf" || true
-          download_pkg "php" || true
+          def parse_packages(idx_file):
+              pkgs = {}
+              current = {}
+              with open(idx_file) as f:
+                  for line in f:
+                      line = line.rstrip()
+                      if line.startswith("Package: "):
+                          current = {"Package": line[9:]}
+                      elif line.startswith("Filename: "):
+                          current["Filename"] = line[10:]
+                      elif line.startswith("Depends: "):
+                          deps = line[9:]
+                          # Parse depends, strip version info
+                          current["Depends"] = [d.strip().split()[0] for d in deps.split(",")]
+                      elif line == "" and current.get("Package"):
+                          pkgs[current["Package"]] = current
+                          current = {}
+                  if current.get("Package"):
+                      pkgs[current["Package"]] = current
+              return pkgs
+          
+          def resolve_deps(pkg_name, pkgs, resolved, visited=None):
+              if visited is None:
+                  visited = set()
+              if pkg_name in resolved or pkg_name in visited:
+                  return
+              visited.add(pkg_name)
+              pkg = pkgs.get(pkg_name)
+              if not pkg:
+                  print(f"  WARN: Package '{pkg_name}' not found")
+                  return
+              for dep in pkg.get("Depends", []):
+                  resolve_deps(dep, pkgs, resolved, visited)
+              resolved.append(pkg_name)
+          
+          pkgs = parse_packages("packages.txt")
+          
+          # Resolve PHP and all its dependencies
+          order = []
+          resolve_deps("php", pkgs, order)
+          print(f"  Packages to download: {len(order)}")
+          
+          # Download each package
+          base_url = os.environ.get("BASE_URL", "https://packages.termux.dev/apt/termux-main")
+          for pkg_name in order:
+              pkg = pkgs.get(pkg_name)
+              if not pkg or "Filename" not in pkg:
+                  print(f"  SKIP: {pkg_name} (no filename)")
+                  continue
+              filename = pkg["Filename"]
+              url = f"{base_url}/{filename}"
+              dest = f"tmp/{filename.split('/')[-1]}"
+              print(f"  GET {filename.split('/')[-1]}...")
+              result = subprocess.run(["curl", "-fsSL", "--max-time", "120", "-o", dest, url],
+                                    capture_output=True, text=True)
+              if result.returncode == 0:
+                  size = os.path.getsize(dest)
+                  print(f"       OK ({size//1024}KB)")
+              else:
+                  print(f"       FAIL: {result.stderr[:80]}")
+          
+          print(f"\nTotal downloads: {len([f for f in os.listdir('tmp') if f.endswith('.deb')])}")
+          PYEOF
           
           echo ""
           echo "=== Extracting packages ==="
           
-          # Extract all .deb files
           for deb in tmp/*.deb; do
             [ -f "$deb" ] || continue
-            echo "  Extracting: $(basename $deb)"
+            name=$(basename "$deb")
             cd "$WORKDIR/tmp"
-            ar x "$(basename $deb)" 2>/dev/null || continue
-            
-            # Try different tar formats
-            if [ -f data.tar.xz ]; then
-              tar xJf data.tar.xz -C "$WORKDIR/src" 2>/dev/null && echo "    OK (xz)"
-            elif [ -f data.tar.zst ]; then
-              zstd -d data.tar.zst -o data.tar 2>/dev/null && tar xf data.tar -C "$WORKDIR/src" 2>/dev/null && echo "    OK (zst)"
-            elif [ -f data.tar.gz ]; then
-              tar xzf data.tar.gz -C "$WORKDIR/src" 2>/dev/null && echo "    OK (gz)"
-            elif [ -f data.tar.bz2 ]; then
-              tar xjf data.tar.bz2 -C "$WORKDIR/src" 2>/dev/null && echo "    OK (bz2)"
-            elif [ -f data.tar.lz4 ]; then
-              lz4 -d data.tar.lz4 data.tar 2>/dev/null && tar xf data.tar -C "$WORKDIR/src" 2>/dev/null && echo "    OK (lz4)"
-            else
-              tar xf data.tar.* -C "$WORKDIR/src" 2>/dev/null && echo "    OK (auto)"
+            ar x "$name" 2>/dev/null || continue
+            extracted=0
+            for fmt in xz zst gz bz2 lz4; do
+              if [ -f "data.tar.$fmt" ]; then
+                case $fmt in
+                  xz) tar xJf data.tar.xz -C "$WORKDIR" 2>/dev/null ;;
+                  zst) zstd -dqf data.tar.zst -o data.tar 2>/dev/null && tar xf data.tar -C "$WORKDIR" 2>/dev/null ;;
+                  gz) tar xzf data.tar.gz -C "$WORKDIR" 2>/dev/null ;;
+                  bz2) tar xjf data.tar.bz2 -C "$WORKDIR" 2>/dev/null ;;
+                  lz4) lz4 -dqf data.tar.lz4 data.tar 2>/dev/null && tar xf data.tar -C "$WORKDIR" 2>/dev/null ;;
+                esac
+                if [ $? -eq 0 ]; then extracted=1; break; fi
+              fi
+            done
+            if [ $extracted -eq 0 ]; then
+              tar xf data.tar.* -C "$WORKDIR" 2>/dev/null
             fi
-            
-            rm -f data.tar.* debian-binary control.tar.*
+            rm -f data.tar.* debian-binary control.tar.* "$name"
             cd "$WORKDIR"
           done
           
           echo ""
           echo "=== Collecting PHP binary and libraries ==="
           
-          # Find the Termux prefix
-          TERMUX_PREFIX=$(find src -maxdepth 6 -type d -name "usr" | head -1)
-          if [ -z "$TERMUX_PREFIX" ]; then
-            echo "WARNING: Could not find Termux prefix, trying alternative..."
-            TERMUX_PREFIX=$(find src -maxdepth 6 -type d -path "*/com.termux/*" | head -1)
-          fi
-          echo "Termux prefix: $TERMUX_PREFIX"
+          # The extracted structure is: data/data/com.termux/files/usr/
+          PREFIX=$(find . -maxdepth 8 -type d -name "usr" -path "*/com.termux/*" | head -1)
+          [ -z "$PREFIX" ] && PREFIX=$(find . -maxdepth 8 -type d -name "usr" | head -1)
+          echo "Prefix: $PREFIX"
           
-          if [ -n "$TERMUX_PREFIX" ]; then
+          if [ -n "$PREFIX" ]; then
             # Copy PHP binary
-            PHP_BIN=$(find "$TERMUX_PREFIX" -name "php" -type f -perm -u+x 2>/dev/null | head -1)
-            if [ -n "$PHP_BIN" ]; then
-              cp "$PHP_BIN" bin/php
-              chmod +x bin/php
-              echo "PHP binary: $PHP_BIN ($(du -h bin/php | cut -f1))"
-            else
-              echo "ERROR: PHP binary not found!"
-            fi
-            
-            # Copy php-cgi if exists
-            PHP_CGI=$(find "$TERMUX_PREFIX" -name "php-cgi" -type f -perm -u+x 2>/dev/null | head -1)
-            if [ -n "$PHP_CGI" ]; then
-              cp "$PHP_CGI" bin/php-cgi
-              chmod +x bin/php-cgi
-              echo "PHP-CGI: $PHP_CGI ($(du -h bin/php-cgi | cut -f1))"
-            fi
-            
-            # Copy ALL shared libraries (.so files)
-            LIB_COUNT=0
-            find "$TERMUX_PREFIX" -name "*.so" -type f 2>/dev/null | while read f; do
-              cp "$f" lib/
-              LIB_COUNT=$((LIB_COUNT + 1))
+            for f in "$PREFIX"/bin/php; do
+              [ -f "$f" ] && cp "$f" bin/ && chmod +x bin/php && echo "PHP binary: $(du -h bin/php | cut -f1)"
             done
-            echo "Libraries copied: $(ls lib/*.so 2>/dev/null | wc -l) files ($(du -sh lib | cut -f1))"
+            
+            # Copy ALL .so files
+            find "$PREFIX"/lib -name "*.so" -type f 2>/dev/null | while read f; do cp "$f" lib/; done
+            echo "Libraries: $(ls lib/*.so 2>/dev/null | wc -l) files ($(du -sh lib | cut -f1))"
           else
-            echo "ERROR: No Termux prefix found. Checking what was extracted:"
-            find src -type f | head -20
+            echo "ERROR: No Termux prefix found"
+            find . -type f | head -10
           fi
           
           echo ""
-          echo "=== Patching PHP binary ==="
-          
-          if [ -f bin/php ]; then
-            # Set RPATH to look for libraries in ../lib relative to the binary
-            if command -v patchelf &>/dev/null; then
-              CURRENT_RPATH=$(patchelf --print-rpath bin/php 2>/dev/null || echo "none")
-              echo "Current RPATH: $CURRENT_RPATH"
-              patchelf --set-rpath '$ORIGIN/../lib' bin/php 2>/dev/null && echo "RPATH set to \$ORIGIN/../lib"
-              
-              # Try to set interpreter to system linker
-              CURRENT_INTERP=$(patchelf --print-interpreter bin/php 2>/dev/null || echo "none")
-              echo "Current interpreter: $CURRENT_INTERP"
-              
-              # Use system linker
-              patchelf --set-interpreter '/system/bin/linker64' bin/php 2>/dev/null && echo "Interpreter set to /system/bin/linker64"
-              
-              NEW_RPATH=$(patchelf --print-rpath bin/php 2>/dev/null)
-              echo "New RPATH: $NEW_RPATH"
-            else
-              echo "WARNING: patchelf not available, skipping binary patching"
-            fi
-          else
-            echo "ERROR: PHP binary not found, cannot patch"
+          echo "=== Patching binary ==="
+          if [ -f bin/php ] && command -v patchelf &>/dev/null; then
+            patchelf --set-rpath '$ORIGIN/../lib' bin/php 2>/dev/null && echo "RPATH set"
+            patchelf --set-interpreter '/system/bin/linker64' bin/php 2>/dev/null && echo "Interpreter set"
           fi
           
           echo ""
-          echo "=== Creating asset directories ==="
-          
-          # Create asset directory structure for the app
-          ASSET_PHP_DIR="$GITHUB_WORKSPACE/app/src/main/assets/php"
-          mkdir -p "$ASSET_PHP_DIR/bin"
-          mkdir -p "$ASSET_PHP_DIR/lib"
-          
-          # Copy to assets
-          if [ -f bin/php ]; then
-            cp bin/php "$ASSET_PHP_DIR/bin/"
-            chmod +x "$ASSET_PHP_DIR/bin/php"
-            echo "Copied php binary to assets"
-          fi
-          
-          # Copy libraries (exclude large unnecessary ones)
-          cp lib/*.so "$ASSET_PHP_DIR/lib/" 2>/dev/null
-          echo "Copied $(ls $ASSET_PHP_DIR/lib/*.so 2>/dev/null | wc -l) libraries to assets"
-          
-          echo ""
-          echo "=== Summary ==="
-          echo "PHP binary: $(ls -la $ASSET_PHP_DIR/bin/php 2>/dev/null | awk '{print $5, $9}')"
-          echo "Libraries: $(ls $ASSET_PHP_DIR/lib/*.so 2>/dev/null | wc -l) files"
-          echo "Total asset size: $(du -sh $ASSET_PHP_DIR | cut -f1)"
+          echo "=== Copying to APK assets ==="
+          ASSET="$GITHUB_WORKSPACE/app/src/main/assets/php"
+          mkdir -p "$ASSET/bin" "$ASSET/lib"
+          [ -f bin/php ] && cp bin/php "$ASSET/bin/" && chmod +x "$ASSET/bin/php"
+          cp lib/*.so "$ASSET/lib/" 2>/dev/null
+          echo "PHP binary: $(ls -la $ASSET/bin/php 2>/dev/null | awk '{print $5}')"
+          echo "Libraries: $(ls $ASSET/lib/*.so 2>/dev/null | wc -l)"
+          echo "Total: $(du -sh $ASSET | cut -f1)"
 
       - name: Generate keystore for signing
         run: |

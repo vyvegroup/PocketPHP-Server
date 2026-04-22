@@ -108,7 +108,7 @@ fun ServerScreen(
                         )
                         Spacer(modifier = Modifier.height(12.dp))
                         LinearProgressIndicator(
-                            progress = { installProgress.toFloat() / 100f },
+                            progress = installProgress / 100f,
                             modifier = Modifier.fillMaxWidth(),
                             color = ServerStarting
                         )
