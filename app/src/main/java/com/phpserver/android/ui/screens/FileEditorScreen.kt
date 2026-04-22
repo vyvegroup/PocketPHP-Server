@@ -52,7 +52,8 @@ fun FileEditorScreen(
     }
 
     val isPhp = filename.endsWith(".php", ignoreCase = true)
-    val isEditable = filename.endsWith(editableExtensions)
+    val extension = filename.substringAfterLast('.', "").lowercase()
+    val isEditable = extension in editableExtensions
 
     BackHandler(enabled = isModified) {
         showUnsavedDialog = true
