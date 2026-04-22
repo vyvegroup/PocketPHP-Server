@@ -1,6 +1,7 @@
 package com.phpserver.android.server
 
 import android.content.Context
+import com.phpserver.android.PhpServerApp
 import fi.iki.elonen.NanoHTTPD
 import java.io.BufferedReader
 import java.io.File
@@ -41,22 +42,21 @@ class PhpEngine {
 
     private fun extractBundledPhp(context: Context, phpDir: File, phpBinary: File) {
         try {
-            context.assets?.let { assetManager ->
-                // Try to extract from assets
-                val phpAssetNames = listOf("php/php-cgi", "php-cgi", "bin/php-cgi")
-                for (assetName in phpAssetNames) {
-                    try {
-                        assetManager.open(assetName).use { input ->
-                            phpBinary.outputStream().use { output ->
-                                input.copyTo(output)
-                            }
-                            phpBinary.setExecutable(true)
-                            ServerState.logs.add("[PhpEngine] Extracted PHP binary from $assetName")
-                            break
+            val phpAssetNames = listOf("php/php-cgi", "php-cgi", "bin/php-cgi")
+            var found = false
+            for (assetName in phpAssetNames) {
+                if (found) break
+                try {
+                    context.assets.open(assetName).use { input ->
+                        phpBinary.outputStream().use { output ->
+                            input.copyTo(output)
                         }
-                    } catch (_: Exception) {
-                        continue
+                        phpBinary.setExecutable(true)
+                        ServerState.logs.add("[PhpEngine] Extracted PHP binary from $assetName")
+                        found = true
                     }
+                } catch (_: Exception) {
+                    // Try next asset name
                 }
             }
         } catch (e: Exception) {
@@ -117,20 +117,19 @@ class PhpEngine {
             // Add cookie
             session.headers["cookie"]?.let { env.add("HTTP_COOKIE=$it") }
 
-            val process = ProcessBuilder(phpBinaryPath!!)
-                .environment(env.associate { 
-                    val parts = it.split("=", limit = 2)
-                    parts[0] to (parts.getOrElse(1) { "" })
-                })
-                .directory(phpFile.parentFile)
-                .redirectErrorStream(true)
-                .start()
+            val envMap = env.associate { 
+                val parts = it.split("=", limit = 2)
+                parts[0] to (parts.getOrElse(1) { "" })
+            }
+            val pb = ProcessBuilder(phpBinaryPath!!)
+            pb.environment().putAll(envMap)
+            pb.directory(phpFile.parentFile)
+            val process = pb.redirectErrorStream(true).start()
 
             // Write POST body if present
             if (session.method == NanoHTTPD.Method.POST) {
                 val files = mutableMapOf<String, String>()
-                val params = mutableMapOf<String, String>()
-                session.parseBody(files, params)
+                session.parseBody(files)
             }
 
             val output = process.inputStream.bufferedReader().readText()

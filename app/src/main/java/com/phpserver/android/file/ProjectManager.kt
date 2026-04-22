@@ -101,9 +101,9 @@ object ProjectManager {
                     
                     <div class="info">
                         <div><strong>PHP Version:</strong> <?php echo phpversion(); ?></div>
-                        <div><strong>Server:</strong> <?php echo $_SERVER['SERVER_SOFTWARE'] ?? 'PHP Local Server/1.0'; ?></div>
-                        <div><strong>Protocol:</strong> <?php echo $_SERVER['SERVER_PROTOCOL'] ?? 'HTTP/1.1'; ?></div>
-                        <div><strong>Document Root:</strong> <?php echo $_SERVER['DOCUMENT_ROOT'] ?? '/var/www/html'; ?></div>
+                        <div><strong>Server:</strong> <?php echo \$_SERVER['SERVER_SOFTWARE'] ?? 'PHP Local Server/1.0'; ?></div>
+                        <div><strong>Protocol:</strong> <?php echo \$_SERVER['SERVER_PROTOCOL'] ?? 'HTTP/1.1'; ?></div>
+                        <div><strong>Document Root:</strong> <?php echo \$_SERVER['DOCUMENT_ROOT'] ?? '/var/www/html'; ?></div>
                         <div><strong>Request Time:</strong> <?php echo date('Y-m-d H:i:s'); ?></div>
                     </div>
                     
@@ -167,11 +167,11 @@ object ProjectManager {
                 <div class="section">
                     <h2>Loaded Extensions</h2>
                     <?php
-                    $extensions = get_loaded_extensions();
-                    sort($extensions);
-                    echo '<p>Total: ' . count($extensions) . ' extensions</p>';
-                    foreach ($extensions as $ext) {
-                        echo '<span class="pass">' . $ext . '</span> ';
+                    \$extensions = get_loaded_extensions();
+                    sort(\$extensions);
+                    echo '<p>Total: ' . count(\$extensions) . ' extensions</p>';
+                    foreach (\$extensions as \$ext) {
+                        echo '<span class="pass">' . \$ext . '</span> ';
                     }
                     ?>
                 </div>
@@ -179,7 +179,7 @@ object ProjectManager {
                 <div class="section">
                     <h2>Functions Test</h2>
                     <?php
-                    $tests = [
+                    \$tests = [
                         ['JSON Encode', function_exists('json_encode')],
                         ['File Operations', function_exists('fopen')],
                         ['String Functions', function_exists('strlen')],
@@ -189,9 +189,9 @@ object ProjectManager {
                         ['Regex', function_exists('preg_match')],
                         ['Session', function_exists('session_start')],
                     ];
-                    foreach ($tests as $test) {
-                        $status = $test[1] ? '<span class="pass">PASS</span>' : '<span class="fail">FAIL</span>';
-                        echo "<div>{$test[0]}: $status</div>";
+                    foreach (\$tests as \$test) {
+                        \$status = \$test[1] ? '<span class="pass">PASS</span>' : '<span class="fail">FAIL</span>';
+                        echo "<div>{\$test[0]}: \$status</div>";
                     }
                     ?>
                 </div>
@@ -199,8 +199,8 @@ object ProjectManager {
                 <div class="section">
                     <h2>Server Information</h2>
                     <table>
-                        <?php foreach ($_SERVER as $key => $value): ?>
-                        <tr><td><?php echo htmlspecialchars($key); ?></td><td><?php echo htmlspecialchars($value); ?></td></tr>
+                        <?php foreach (\$_SERVER as \$key => \$value): ?>
+                        <tr><td><?php echo htmlspecialchars(\$key); ?></td><td><?php echo htmlspecialchars(\$value); ?></td></tr>
                         <?php endforeach; ?>
                     </table>
                 </div>

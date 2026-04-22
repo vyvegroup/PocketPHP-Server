@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <color name="php_primary">#777BB3</color>
-    <color name="php_primary_dark">#5A5D8A</color>
-    <color name="php_accent">#8892BF</color>
-    <color name="server_online">#4CAF50</color>
-    <color name="server_offline">#E53935</color>
-    <color name="server_starting">#FFA726</color>
-</resources>
