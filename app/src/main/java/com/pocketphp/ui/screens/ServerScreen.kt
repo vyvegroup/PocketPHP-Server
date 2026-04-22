@@ -14,6 +14,7 @@ import androidx.compose.ui.unit.dp
 import com.pocketphp.server.PhpHttpServer
 import com.pocketphp.server.ServerController
 import com.pocketphp.ui.theme.*
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -27,11 +28,31 @@ fun ServerScreen(
     var showPortDialog by remember { mutableStateOf(false) }
     val scrollState = rememberScrollState()
 
-    // Poll status every second
+    // PHP state
+    var phpInstalled by remember { mutableStateOf(serverController.isPhpInstalled()) }
+    var phpVersion by remember { mutableStateOf(serverController.getPhpVersion()) }
+    var isInstalling by remember { mutableStateOf(false) }
+    var installProgress by remember { mutableIntStateOf(0) }
+    var installMessage by remember { mutableStateOf("") }
+    var installError by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    // Poll server status
     LaunchedEffect(Unit) {
         while (true) {
             serverStatus = serverController.getStatus()
             kotlinx.coroutines.delay(1000)
+        }
+    }
+
+    // Check PHP status periodically
+    LaunchedEffect(Unit) {
+        while (true) {
+            phpInstalled = serverController.isPhpInstalled()
+            if (phpInstalled) {
+                phpVersion = serverController.getPhpVersion()
+            }
+            kotlinx.coroutines.delay(3000)
         }
     }
 
@@ -56,7 +77,185 @@ fun ServerScreen(
             modifier = Modifier.padding(bottom = 16.dp)
         )
 
-        // Status Card
+        // PHP Installation Card (shown when PHP not installed or installing)
+        if (!phpInstalled || isInstalling) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (installError)
+                        ServerError.copy(alpha = 0.1f)
+                    else if (isInstalling)
+                        ServerStarting.copy(alpha = 0.1f)
+                    else
+                        MaterialTheme.colorScheme.primaryContainer
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    if (isInstalling) {
+                        Icon(
+                            imageVector = Icons.Default.Downloading,
+                            contentDescription = null,
+                            tint = ServerStarting,
+                            modifier = Modifier.size(48.dp)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "Installing PHP 8.3...",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        LinearProgressIndicator(
+                            progress = { installProgress.toFloat() / 100f },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = ServerStarting
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "$installProgress% - $installMessage",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else if (installError) {
+                        Icon(
+                            imageVector = Icons.Default.ErrorOutline,
+                            contentDescription = null,
+                            tint = ServerError,
+                            modifier = Modifier.size(48.dp)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "PHP Installation Failed",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = ServerError
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = installMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Button(
+                            onClick = {
+                                installError = false
+                                installMessage = ""
+                                scope.launch {
+                                    isInstalling = true
+                                    installProgress = 0
+                                    val success = serverController.getPhpInstaller().install { progress, msg ->
+                                        installProgress = if (progress < 0) 0 else progress
+                                        installMessage = msg
+                                    }
+                                    isInstalling = false
+                                    if (success) {
+                                        phpInstalled = true
+                                        phpVersion = serverController.getPhpVersion()
+                                        installMessage = ""
+                                    } else {
+                                        installError = true
+                                    }
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = ServerError)
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Retry Installation")
+                        }
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.SystemUpdate,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(48.dp)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "PHP 8.3 Runtime Required",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "The PHP runtime needs to be installed before starting the server. This will extract PHP 8.3 and all required libraries.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    isInstalling = true
+                                    installProgress = 0
+                                    installError = false
+                                    installMessage = ""
+                                    val success = serverController.getPhpInstaller().install { progress, msg ->
+                                        installProgress = if (progress < 0) 0 else progress
+                                        installMessage = msg
+                                    }
+                                    isInstalling = false
+                                    if (success) {
+                                        phpInstalled = true
+                                        phpVersion = serverController.getPhpVersion()
+                                        installMessage = ""
+                                    } else {
+                                        installError = true
+                                    }
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                        ) {
+                            Icon(Icons.Default.Download, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Install PHP 8.3")
+                        }
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+        } else {
+            // PHP Info Card (shown when PHP is installed)
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = ServerOnline.copy(alpha = 0.1f)
+                )
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = ServerOnline,
+                        modifier = Modifier.size(36.dp)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "PHP 8.3 Ready",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        if (phpVersion != null) {
+                            Text(
+                                text = phpVersion!!,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+
+        // Server Status Card
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(
@@ -156,7 +355,8 @@ fun ServerScreen(
                     serverController.start()
                 },
                 modifier = Modifier.weight(1f),
-                enabled = serverStatus == PhpHttpServer.ServerStatus.STOPPED || serverStatus == PhpHttpServer.ServerStatus.ERROR,
+                enabled = phpInstalled && !isInstalling &&
+                    (serverStatus == PhpHttpServer.ServerStatus.STOPPED || serverStatus == PhpHttpServer.ServerStatus.ERROR),
                 colors = ButtonDefaults.buttonColors(containerColor = ServerOnline)
             ) {
                 Icon(Icons.Default.PlayArrow, contentDescription = null)

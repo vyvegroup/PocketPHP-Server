@@ -2,43 +2,38 @@ package com.pocketphp.server
 
 import android.content.Context
 import android.util.Log
-import java.io.BufferedReader
 import java.io.File
-import java.io.InputStreamReader
 
 /**
- * Executes PHP scripts using a bundled PHP CGI binary.
- * Downloads PHP binary on first use if not present.
+ * Executes PHP 8.3 scripts using the bundled PHP CGI binary.
+ * Sets LD_LIBRARY_PATH for proper shared library resolution.
  */
 class PhpExecutor(private val context: Context) {
 
     companion object {
         private const val TAG = "PhpExecutor"
-        private const val PHP_DIR = "php"
-        private const val PHP_BINARY_NAME = "php"
-        private const val PHP_INI_NAME = "php.ini"
-        private const val PHP_DOWNLOAD_URL = "https://github.com/vyvegroup/PocketPHP-Server/releases/download/php-binary/php-cgi-arm64"
     }
 
-    private val phpDir = File(context.filesDir, PHP_DIR)
-    private var phpBinary: File? = null
-    private var isInstalled = false
+    private val installer = PhpInstaller(context)
+    private val phpDir = File(context.filesDir, PhpInstaller.PHP_DIR_NAME)
+    private val phpBinDir = File(phpDir, "bin")
+    private val phpLibDir = File(phpDir, "lib")
 
     /**
      * Check if PHP is installed and ready.
      */
-    fun isPhpInstalled(): Boolean {
-        if (isInstalled && phpBinary?.exists() == true) return true
-        phpBinary = File(phpDir, PHP_BINARY_NAME)
-        isInstalled = phpBinary?.exists() == true && phpBinary?.canExecute() == true
-        return isInstalled
-    }
+    fun isPhpInstalled(): Boolean = installer.isInstalled()
+
+    /**
+     * Get the PHP installer for UI-driven installation.
+     */
+    fun getInstaller(): PhpInstaller = installer
 
     /**
      * Get the PHP binary file path.
      */
     fun getPhpBinaryPath(): String? {
-        return if (isPhpInstalled()) phpBinary?.absolutePath else null
+        return if (isPhpInstalled()) installer.phpBinary.absolutePath else null
     }
 
     /**
@@ -50,48 +45,75 @@ class PhpExecutor(private val context: Context) {
      * Execute a PHP script and return the output.
      *
      * @param scriptPath Absolute path to the PHP script
-     * @param serverVars CGI server variables (SCRIPT_NAME, REQUEST_URI, etc.)
+     * @param serverVars CGI server variables
      * @param postData POST data body (null for GET)
-     * @return The PHP script output (stdout)
+     * @return The PHP script output
      */
     fun execute(scriptPath: String, serverVars: Map<String, String>, postData: String? = null): String {
         if (!isPhpInstalled()) {
-            return "<h1>PHP not installed</h1><p>Please install PHP from the app settings.</p>"
+            return "<h1>PHP 8.3 Not Installed</h1><p>Please tap \"Install PHP 8.3\" button to download and set up the PHP runtime.</p>"
+        }
+
+        val phpBinary = installer.phpBinary
+        if (!phpBinary.exists()) {
+            return "<h1>PHP Binary Not Found</h1><p>Please reinstall PHP from Settings.</p>"
         }
 
         return try {
-            val command = mutableListOf(phpBinary?.absolutePath ?: return "PHP binary not found")
-            command.add("-d")
-            command.add("display_errors=On")
-            command.add("-d")
-            command.add("error_reporting=E_ALL")
-            command.add("-d")
-            command.add("short_open_tag=On")
-            command.add("-d")
-            command.add("doc_root=${context.filesDir.absolutePath}/www")
+            val scriptFile = File(scriptPath)
+            if (!scriptFile.exists()) {
+                return "<h1>404 Not Found</h1><p>Script not found: $scriptPath</p>"
+            }
+
+            val command = mutableListOf(
+                phpBinary.absolutePath,
+                "-d", "display_errors=On",
+                "-d", "error_reporting=E_ALL",
+                "-d", "short_open_tag=On",
+                "-d", "doc_root=${File(context.filesDir, "www").absolutePath}",
+                "-d", "extension_dir=${phpLibDir.absolutePath}",
+                "-d", "cgi.force_redirect=0",
+                "-d", "cgi.fix_pathinfo=1"
+            )
+
+            // Load custom php.ini if exists
+            val iniFile = File(phpDir, "php.ini")
+            if (iniFile.exists()) {
+                command.add("-d")
+                command.add("custom_ini=${iniFile.absolutePath}")
+            }
+
             command.add(scriptPath)
 
             val processBuilder = ProcessBuilder(command)
             processBuilder.directory(phpDir)
             processBuilder.redirectErrorStream(true)
 
-            // Set CGI environment variables
+            // Set environment
             val env = processBuilder.environment()
+            // Critical: Set LD_LIBRARY_PATH so PHP finds bundled .so libraries
+            env["LD_LIBRARY_PATH"] = phpLibDir.absolutePath
+            env["HOME"] = phpDir.absolutePath
+
+            // CGI variables
             env["GATEWAY_INTERFACE"] = "CGI/1.1"
             env["SERVER_PROTOCOL"] = "HTTP/1.1"
             env["SERVER_SOFTWARE"] = "PocketPHP/1.0"
             env["DOCUMENT_ROOT"] = File(context.filesDir, "www").absolutePath
+            env["SCRIPT_FILENAME"] = scriptPath
+            env["REDIRECT_STATUS"] = "200"
+
             serverVars.forEach { (key, value) -> env[key] = value }
 
             if (postData != null) {
                 env["CONTENT_LENGTH"] = postData.length.toString()
                 env["CONTENT_TYPE"] = "application/x-www-form-urlencoded"
-                processBuilder.redirectErrorStream(true)
+                env["REQUEST_METHOD"] = "POST"
             }
 
             val process = processBuilder.start()
 
-            // Write POST data if present
+            // Write POST data
             if (postData != null) {
                 process.outputStream.write(postData.toByteArray())
                 process.outputStream.flush()
@@ -103,19 +125,18 @@ class PhpExecutor(private val context: Context) {
 
             if (exitCode != 0 && output.isEmpty()) {
                 Log.e(TAG, "PHP exited with code $exitCode")
-                return "<h1>PHP Error</h1><p>PHP exited with code $exitCode</p>"
+                return "<h1>PHP Error</h1><p>PHP exited with code $exitCode. Check that all required libraries are present.</p>"
             }
 
-            // Parse CGI output: separate headers from body
             parseCgiOutput(output)
         } catch (e: Exception) {
-            Log.e(TAG, "Error executing PHP", e)
-            "<h1>PHP Execution Error</h1><pre>${e.message ?: "Unknown error"}</pre>"
+            Log.e(TAG, "Error executing PHP script", e)
+            "<h1>PHP Execution Error</h1><pre>${e.message ?: "Unknown error"}\n\n${e.stackTraceToString().take(500)}</pre>"
         }
     }
 
     /**
-     * Parse CGI output to extract headers and body.
+     * Parse CGI output to extract the body (after headers).
      */
     private fun parseCgiOutput(raw: String): String {
         val lines = raw.lines()
@@ -127,7 +148,6 @@ class PhpExecutor(private val context: Context) {
                 if (line.isBlank()) {
                     inBody = true
                 }
-                // CGI headers are parsed by the caller
             } else {
                 bodyLines.add(line)
             }
@@ -169,15 +189,6 @@ class PhpExecutor(private val context: Context) {
      */
     fun getPhpVersion(): String? {
         if (!isPhpInstalled()) return null
-        return try {
-            val process = ProcessBuilder(phpBinary?.absolutePath ?: return null, "-v")
-                .redirectErrorStream(true)
-                .start()
-            val output = process.inputStream.bufferedReader().readText().trim()
-            process.waitFor()
-            output.lines().firstOrNull()
-        } catch (e: Exception) {
-            null
-        }
+        return installer.getPhpVersion()
     }
 }
