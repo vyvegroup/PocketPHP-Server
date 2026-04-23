@@ -137,6 +137,30 @@ fun ServerScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        var showDiag by remember { mutableStateOf(false) }
+                        TextButton(onClick = { showDiag = !showDiag }) {
+                            Text("Show Diagnostics", style = MaterialTheme.typography.bodySmall)
+                        }
+                        if (showDiag) {
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 200.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                shape = MaterialTheme.shapes.small
+                            ) {
+                                Text(
+                                    text = serverController.getPhpInstaller().getDiagnostics(),
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        fontFamily = FontFamily.Monospace
+                                    ),
+                                    modifier = Modifier
+                                        .padding(8.dp)
+                                        .verticalScroll(rememberScrollState())
+                                )
+                            }
+                        }
                         Spacer(modifier = Modifier.height(12.dp))
                         Button(
                             onClick = {
@@ -179,8 +203,14 @@ fun ServerScreen(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "The PHP runtime needs to be installed before starting the server. This will extract PHP 8.3 and all required libraries.",
+                            text = "The PHP 8.3 runtime needs to be extracted before starting the server. This will copy the PHP binary and ${serverController.getPhpInstaller().getDeviceArch()} libraries to your device storage (~30MB).",
                             style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Device: ${android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"}",
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(modifier = Modifier.height(16.dp))

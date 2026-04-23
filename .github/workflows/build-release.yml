@@ -25,7 +25,7 @@ jobs:
   build:
     name: Build Android APK
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout code
@@ -52,211 +52,307 @@ jobs:
             gradle wrapper --gradle-version 8.5
           fi
 
-      # ====== Download and Bundle PHP from Termux ======
-      - name: Download PHP (ARM64) from Termux
-        env:
-          TERMUX_INDEX: "https://packages.termux.dev/apt/termux-main/dists/stable/main/binary-aarch64/Packages.gz"
+      # ====== Download and Bundle PHP 8.3 from Termux ======
+      - name: Install build tools
         run: |
-          sudo apt-get install -y xz-utils zstd patchelf python3-zstandard 2>/dev/null || true
-          
-          WORKDIR=/tmp/php-build
-          rm -rf "$WORKDIR" && mkdir -p "$WORKDIR"/{tmp,bin,lib}
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq patchelf file 2>&1 | tail -5
+          echo "patchelf version: $(patchelf --version 2>&1 | head -1)"
+
+      - name: Download PHP 8.3 for Android (ARM64 + ARMv7)
+        run: |
+          set -e
+
+          WORKDIR=/tmp/php-bundle
+          rm -rf "$WORKDIR" && mkdir -p "$WORKDIR"
           cd "$WORKDIR"
+
           BASE_URL="https://packages.termux.dev/apt/termux-main"
-          
-          echo "=== Resolving PHP packages from Termux index ==="
-          
-          # Download and parse the package index
-          curl -fsSL --max-time 60 "$TERMUX_INDEX" | gunzip > packages.txt 2>/dev/null
-          
-          # Python script to resolve deps, download and extract
+
           python3 << 'PYEOF'
-          import os, re, subprocess, sys, tarfile, io, struct, gzip, zlib, lzma
-          
-          def parse_packages(idx_file):
-              pkgs = {}
-              current = {}
-              with open(idx_file) as f:
-                  for line in f:
-                      line = line.rstrip()
-                      if line.startswith("Package: "):
-                          current = {"Package": line[9:]}
-                      elif line.startswith("Filename: "):
-                          current["Filename"] = line[10:]
-                      elif line.startswith("Depends: "):
-                          deps = line[9:]
-                          current["Depends"] = [d.strip().split()[0] for d in deps.split(",")]
-                      elif line == "" and current.get("Package"):
-                          pkgs[current["Package"]] = current
-                          current = {}
-                  if current.get("Package"):
-                      pkgs[current["Package"]] = current
-              return pkgs
-          
-          def resolve_deps(pkg_name, pkgs, resolved, visited=None):
-              if visited is None:
-                  visited = set()
-              if pkg_name in resolved or pkg_name in visited:
-                  return
-              visited.add(pkg_name)
-              pkg = pkgs.get(pkg_name)
-              if not pkg:
-                  print(f"  WARN: Package '{pkg_name}' not found")
-                  return
-              for dep in pkg.get("Depends", []):
-                  resolve_deps(dep, pkgs, resolved, visited)
-              resolved.append(pkg_name)
-          
+          import os, sys, subprocess, re, gzip, tarfile, io, lzma
+
+          def download(url, dest, timeout=120):
+              r = subprocess.run(["curl", "-fsSL", "--max-time", str(timeout), "-o", dest, url],
+                                capture_output=True, text=True)
+              if r.returncode != 0:
+                  print(f"  FAIL download {url}: {r.stderr.strip()}")
+                  return False
+              return True
+
           def extract_deb(deb_path, dest_dir):
-              """Extract .deb file (ar archive) using pure Python"""
+              """Extract .deb (ar archive) using pure Python."""
               with open(deb_path, 'rb') as f:
                   magic = f.read(8)
                   if magic != b'!<arch>\n':
-                      print(f"    WARN: Not a valid ar archive: {deb_path}")
                       return False
-                  
-                  members = []
                   while True:
                       header = f.read(60)
                       if len(header) < 60:
                           break
                       name = header[0:16].decode().strip()
-                      size_str = header[48:58].decode().strip()
-                      size = int(size_str)
+                      size = int(header[48:58].decode().strip())
                       data = f.read(size)
                       if len(data) < size:
-                          f.read(1)  # padding
-                      if name in ('data.tar.xz', 'data.tar.gz', 'data.tar.bz2', 'data.tar.zst', 'data.tar.lz4', 'data.tar'):
-                          print(f"    Found: {name} ({size} bytes)")
+                          f.read(1)
+                      if name.startswith('data.tar'):
                           try:
-                              if name == 'data.tar.xz':
-                                  import lzma
-                                  tar_data = lzma.decompress(data)
-                                  tf = tarfile.open(fileobj=io.BytesIO(tar_data))
-                              elif name == 'data.tar.gz':
-                                  tar_data = gzip.decompress(data)
-                                  tf = tarfile.open(fileobj=io.BytesIO(tar_data))
-                              elif name == 'data.tar.bz2':
-                                  tar_data = data  # tarfile handles bz2
+                              if name.endswith('.xz'):
+                                  data = lzma.decompress(data)
                                   tf = tarfile.open(fileobj=io.BytesIO(data))
-                              elif name == 'data.tar.zst':
+                              elif name.endswith('.gz'):
+                                  import gzip as gz
+                                  data = gz.decompress(data)
+                                  tf = tarfile.open(fileobj=io.BytesIO(data))
+                              elif name.endswith('.zst'):
                                   import zstandard as zstd
-                                  tar_data = zstd.ZstdDecompressor().decompress(data)
-                                  tf = tarfile.open(fileobj=io.BytesIO(tar_data))
+                                  data = zstd.ZstdDecompressor().decompress(data)
+                                  tf = tarfile.open(fileobj=io.BytesIO(data))
                               else:
                                   tf = tarfile.open(fileobj=io.BytesIO(data))
                               tf.extractall(dest_dir)
                               tf.close()
-                              print(f"    Extracted OK")
                               return True
                           except Exception as e:
-                              print(f"    Extract {name} failed: {e}")
-                              # Fallback: try as raw tar
+                              print(f"    WARN extract {name}: {e}")
                               try:
                                   tf = tarfile.open(fileobj=io.BytesIO(data))
                                   tf.extractall(dest_dir)
                                   tf.close()
-                                  print(f"    Fallback raw tar OK")
                                   return True
                               except:
                                   pass
-                  return False
-          
-          pkgs = parse_packages("packages.txt")
-          order = []
-          resolve_deps("php", pkgs, order)
-          print(f"  Packages to download: {len(order)}")
-          
-          base_url = os.environ.get("BASE_URL")
-          os.makedirs("tmp", exist_ok=True)
-          
-          for pkg_name in order:
+              return False
+
+          def parse_packages(index_url):
+              """Download and parse Termux Packages.gz index."""
+              gz_path = "/tmp/pkg_index.gz"
+              txt_path = "/tmp/pkg_index.txt"
+              if not download(index_url, gz_path, 60):
+                  print(f"FATAL: Cannot download index from {index_url}")
+                  sys.exit(1)
+              with gzip.open(gz_path, 'rb') as f:
+                  content = f.read().decode('utf-8', errors='replace')
+              with open(txt_path, 'w') as f:
+                  f.write(content)
+
+              pkgs = {}
+              current = {}
+              for line in content.split('\n'):
+                  line = line.rstrip('\r')
+                  if line.startswith("Package: "):
+                      if current.get("Package"):
+                          pkgs[current["Package"]] = current
+                      current = {"Package": line[9:]}
+                  elif line.startswith("Filename: "):
+                      current["Filename"] = line[10:]
+                  elif line.startswith("Depends: "):
+                      deps_str = line[9:]
+                      deps = []
+                      for d in deps_str.split(","):
+                          d = d.strip()
+                          if d:
+                              deps.append(d.split()[0])  # take name before version
+                      current["Depends"] = deps
+                  elif line == "" and current.get("Package"):
+                      pkgs[current["Package"]] = current
+                      current = {}
+              if current.get("Package"):
+                  pkgs[current["Package"]] = current
+              return pkgs
+
+          def resolve_all(pkg_name, pkgs, resolved, visited=None):
+              if visited is None:
+                  visited = set()
+              if pkg_name in visited:
+                  return
+              visited.add(pkg_name)
               pkg = pkgs.get(pkg_name)
-              if not pkg or "Filename" not in pkg:
-                  continue
-              filename = pkg["Filename"]
-              url = f"{base_url}/{filename}"
-              dest = f"tmp/{filename.split('/')[-1]}"
-              result = subprocess.run(["curl", "-fsSL", "--max-time", "120", "-o", dest, url],
-                                    capture_output=True, text=True)
-              if result.returncode == 0:
-                  size = os.path.getsize(dest)
-                  print(f"  DL {filename.split('/')[-1][:40]:40s} {size//1024:5d}KB")
-              else:
-                  print(f"  FAIL {filename.split('/')[-1][:40]:40s}")
-          
-          print(f"\n=== Extracting {len([f for f in os.listdir('tmp') if f.endswith('.deb')])} packages ===")
-          os.makedirs("src", exist_ok=True)
-          for deb in sorted(os.listdir("tmp")):
-              if not deb.endswith(".deb"):
-                  continue
-              print(f"  Extract {deb[:50]:50s}...", end=" ")
-              ok = extract_deb(f"tmp/{deb}", "src")
-              if ok:
-                  print("OK")
-              else:
-                  print("SKIP")
-          
-          # Find Termux prefix
-          prefix = None
-          for root, dirs, files in os.walk("src"):
-              if "com.termux" in root and root.endswith("usr"):
-                  prefix = root
-                  break
-          if not prefix:
-              for root, dirs, files in os.walk("src"):
-                  if "bin/php" in files:
-                      prefix = os.path.join(root, "bin")
-                      break
-          
-          print(f"\nPrefix: {prefix}")
-          os.makedirs("bin", exist_ok=True)
-          os.makedirs("lib", exist_ok=True)
-          
-          if prefix:
-              php_bin = os.path.join(prefix, "bin", "php")
-              if os.path.isfile(php_bin):
+              if not pkg:
+                  print(f"  SKIP (not found): {pkg_name}")
+                  return
+              for dep in pkg.get("Depends", []):
+                  resolve_all(dep, pkgs, resolved, visited)
+              resolved.append(pkg_name)
+
+          def collect_files(src_dir, bin_out, lib_out, arch):
+              """Collect PHP binary and ALL .so files from extracted packages."""
+              php_found = False
+              so_count = 0
+
+              for root, dirs, files in os.walk(src_dir):
+                  for fname in files:
+                      fpath = os.path.join(root, fname)
+                      if fname == "php" and os.path.isfile(fpath) and os.access(fpath, os.R_OK):
+                          import shutil
+                          shutil.copy2(fpath, os.path.join(bin_out, "php"))
+                          os.chmod(os.path.join(bin_out, "php"), 0o755)
+                          php_found = True
+                          print(f"    PHP binary: {os.path.getsize(fpath)//1024}KB from {fpath}")
+                      elif fname.endswith(".so") or fname.endswith(".so.0") or fname.endswith(".so.1") or fname.endswith(".so.2") or fname.endswith(".so.3") or fname.endswith(".so.4"):
+                          import shutil
+                          dest = os.path.join(lib_out, fname)
+                          if not os.path.exists(dest):
+                              shutil.copy2(fpath, dest)
+                              so_count += 1
+
+              return php_found, so_count
+
+          BASE_URL = "https://packages.termux.dev/apt/termux-main"
+
+          architectures = [
+              {"termux": "aarch64", "asset": "arm64", "linker": "/system/bin/linker64"},
+              {"termux": "arm", "asset": "arm", "linker": "/system/bin/linker"},
+          ]
+
+          for arch_info in architectures:
+              arch = arch_info["termux"]
+              asset_name = arch_info["asset"]
+              linker = arch_info["linker"]
+
+              print(f"\n{'='*60}")
+              print(f"=== Building PHP for {asset_name} ({arch}) ===")
+              print(f"{'='*60}")
+
+              index_url = f"{BASE_URL}/dists/stable/main/binary-{arch}/Packages.gz"
+              pkgs = parse_packages(index_url)
+              print(f"  Index: {len(pkgs)} packages")
+
+              # Resolve all dependencies
+              order = []
+              resolve_all("php", pkgs, order)
+              print(f"  Dependencies resolved: {len(order)} packages")
+
+              # Download packages
+              os.makedirs(f"debs_{arch}", exist_ok=True)
+              dl_ok = 0
+              dl_fail = 0
+              for pkg_name in order:
+                  pkg = pkgs.get(pkg_name)
+                  if not pkg or "Filename" not in pkg:
+                      continue
+                  url = f"{BASE_URL}/{pkg['Filename']}"
+                  deb_name = pkg["Filename"].split("/")[-1]
+                  dest = f"debs_{arch}/{deb_name}"
+                  if os.path.isfile(dest) and os.path.getsize(dest) > 100:
+                      dl_ok += 1
+                      continue
+                  if download(url, dest, 120):
+                      dl_ok += 1
+                  else:
+                      dl_fail += 1
+              print(f"  Downloaded: {dl_ok} OK, {dl_fail} FAIL")
+
+              # Extract all packages
+              src_dir = f"src_{arch}"
+              os.makedirs(src_dir, exist_ok=True)
+              ext_ok = 0
+              for deb in sorted(os.listdir(f"debs_{arch}")):
+                  if not deb.endswith(".deb"):
+                      continue
+                  if extract_deb(f"debs_{arch}/{deb}", src_dir):
+                      ext_ok += 1
+              print(f"  Extracted: {ext_ok} packages")
+
+              # Collect binary and libraries
+              asset_php = os.path.join(os.environ.get("GITHUB_WORKSPACE", "/tmp"),
+                                        "app/src/main/assets/php", asset_name)
+              bin_dir = os.path.join(asset_php, "bin")
+              lib_dir = os.path.join(asset_php, "lib")
+              os.makedirs(bin_dir, exist_ok=True)
+              os.makedirs(lib_dir, exist_ok=True)
+
+              php_found, so_count = collect_files(src_dir, bin_dir, lib_dir, arch)
+              print(f"  PHP binary found: {php_found}")
+              print(f"  .so files collected: {so_count}")
+
+              if not php_found:
+                  print(f"  ERROR: PHP binary not found! Listing files:")
+                  for root, dirs, files in os.walk(src_dir):
+                      for f in files:
+                          if "php" in f.lower():
+                              print(f"    {os.path.join(root, f)}")
+
+              # Patch binary with patchelf
+              php_bin = os.path.join(bin_dir, "php")
+              if php_found and os.path.isfile(php_bin):
                   import shutil
-                  shutil.copy2(php_bin, "bin/php")
-                  os.chmod("bin/php", 0o755)
-                  print(f"PHP binary: {os.path.getsize('bin/php')//1024}KB")
-              
-              lib_dir = os.path.join(prefix, "lib")
-              if os.path.isdir(lib_dir):
-                  count = 0
-                  for f in os.listdir(lib_dir):
-                      if f.endswith(".so"):
-                          shutil.copy2(os.path.join(lib_dir, f), f"lib/{f}")
-                          count += 1
-                  print(f"Libraries: {count} files")
-          else:
-              print("ERROR: No prefix found!")
-              shown = 0
-              for root, dirs, files in os.walk("src"):
-                  for f in files:
-                      print(f"  {os.path.join(root, f)}")
-                      shown += 1
-                      if shown > 20:
-                          print("  ...")
-                          break
+                  # Verify ELF
+                  result = subprocess.run(["file", php_bin], capture_output=True, text=True)
+                  print(f"  File type: {result.stdout.strip()}")
+
+                  # Set RPATH (use --force-rpath for ELF RPATH instead of RUNPATH)
+                  r1 = subprocess.run(["patchelf", "--set-rpath", "$ORIGIN/../lib",
+                                       "--force-rpath", php_bin],
+                                      capture_output=True, text=True)
+                  if r1.returncode == 0:
+                      print(f"  RPATH set: $ORIGIN/../lib")
+                  else:
+                      print(f"  RPATH FAILED: {r1.stderr.strip()}")
+
+                  # Set interpreter
+                  r2 = subprocess.run(["patchelf", "--set-interpreter", linker, php_bin],
+                                      capture_output=True, text=True)
+                  if r2.returncode == 0:
+                      print(f"  Interpreter set: {linker}")
+                  else:
+                      print(f"  Interpreter FAILED: {r2.stderr.strip()}")
+
+                  # Verify
+                  result = subprocess.run(["patchelf", "--print-rpath", php_bin],
+                                        capture_output=True, text=True)
+                  print(f"  RPATH verify: {result.stdout.strip()}")
+                  result = subprocess.run(["patchelf", "--print-interpreter", php_bin],
+                                        capture_output=True, text=True)
+                  print(f"  Interpreter verify: {result.stdout.strip()}")
+
+                  # Also patch all .so files to fix their rpath
+                  patched_so = 0
+                  for so_file in os.listdir(lib_dir):
+                      so_path = os.path.join(lib_dir, so_file)
+                      if not os.path.isfile(so_path):
+                          continue
+                      # Check if it's an ELF file
+                      fr = subprocess.run(["file", so_path], capture_output=True, text=True)
+                      if "ELF" in fr.stdout:
+                          pr = subprocess.run(["patchelf", "--set-rpath", "$ORIGIN",
+                                             "--force-rpath", so_path],
+                                            capture_output=True, text=True)
+                          if pr.returncode == 0:
+                              patched_so += 1
+                  print(f"  Patched {patched_so} .so files")
+
+                  size_mb = os.path.getsize(php_bin) / (1024*1024)
+                  total_lib_mb = sum(os.path.getsize(os.path.join(lib_dir, f))
+                                    for f in os.listdir(lib_dir)) / (1024*1024)
+                  print(f"  Total: PHP {size_mb:.1f}MB + libs {total_lib_mb:.1f}MB = {size_mb+total_lib_mb:.1f}MB")
+              else:
+                  print(f"FATAL: PHP binary not found for {asset_name}!")
+                  sys.exit(1)
+
+          print(f"\n{'='*60}")
+          print("=== PHP Bundle Complete ===")
+          print(f"{'='*60}")
           PYEOF
-          
+
+      - name: Verify PHP bundle
+        run: |
+          echo "=== ARM64 ==="
+          ls -la app/src/main/assets/php/arm64/bin/php 2>/dev/null || echo "MISSING!"
+          echo "Lib count: $(ls app/src/main/assets/php/arm64/lib/ 2>/dev/null | wc -l)"
+          echo "Total size: $(du -sh app/src/main/assets/php/arm64/ 2>/dev/null | cut -f1)"
+
           echo ""
-          echo "=== Patching binary ==="
-          if [ -f bin/php ] && command -v patchelf &>/dev/null; then
-            patchelf --set-rpath '$ORIGIN/../lib' bin/php 2>/dev/null && echo "RPATH set"
-            patchelf --set-interpreter '/system/bin/linker64' bin/php 2>/dev/null && echo "Interpreter set"
+          echo "=== ARM (ARMv7) ==="
+          ls -la app/src/main/assets/php/arm/bin/php 2>/dev/null || echo "MISSING!"
+          echo "Lib count: $(ls app/src/main/assets/php/arm/lib/ 2>/dev/null | wc -l)"
+          echo "Total size: $(du -sh app/src/main/assets/php/arm/ 2>/dev/null | cut -f1)"
+
+          # Fail if ARM64 PHP is missing (most important)
+          if [ ! -f app/src/main/assets/php/arm64/bin/php ]; then
+            echo "ERROR: ARM64 PHP binary missing!"
+            exit 1
           fi
-          
-          echo ""
-          echo "=== Copying to APK assets ==="
-          ASSET="$GITHUB_WORKSPACE/app/src/main/assets/php"
-          mkdir -p "$ASSET/bin" "$ASSET/lib"
-          [ -f bin/php ] && cp bin/php "$ASSET/bin/" && chmod +x "$ASSET/bin/php"
-          cp lib/*.so "$ASSET/lib/" 2>/dev/null
-          echo "PHP binary: $(ls -la $ASSET/bin/php 2>/dev/null | awk '{print $5}')"
-          echo "Libraries: $(ls $ASSET/lib/*.so 2>/dev/null | wc -l)"
-          echo "Total: $(du -sh $ASSET | cut -f1)"
 
       - name: Generate keystore for signing
         run: |
@@ -290,12 +386,6 @@ jobs:
           echo "Size: $(du -h $APK_PATH | cut -f1)"
           BUILD_TOOLS=$ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools/ | tail -1)
           $BUILD_TOOLS/apksigner verify --verbose --print-certs "$APK_PATH" || true
-          
-          # Check PHP is bundled
-          echo ""
-          echo "=== PHP Bundle Check ==="
-          ls -la app/src/main/assets/php/bin/ 2>/dev/null || echo "No PHP bin"
-          echo "Lib count: $(ls app/src/main/assets/php/lib/*.so 2>/dev/null | wc -l)"
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
@@ -327,7 +417,7 @@ jobs:
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             VERSION="${{ github.ref_name }}"
           else
-            VERSION="v1.0.0-$(date +%Y%m%d-%H%M%S)"
+            VERSION="v1.1.0-$(date +%Y%m%d-%H%M%S)"
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           APK_PATH=$(find ./release-apk -name "*.apk" | head -n 1)
@@ -344,6 +434,7 @@ jobs:
 
             ### Features
             - **PHP 8.3** on Android localhost (no VPS needed)
+            - Supports **ARM64** and **ARMv7** devices
             - Built-in Router: `/{controller}/{action}/{id}` - no .htaccess needed
             - **Cloudflare Quick Tunnel** - free, no account
             - **Ngrok Tunnel** - free tier, optional authtoken
@@ -355,7 +446,7 @@ jobs:
             ### First-Time Setup
             1. Install APK on Android
             2. Open PocketPHP
-            3. Tap **"Install PHP 8.3"** (extracts bundled runtime)
+            3. Tap **"Install PHP 8.3"** (extracts bundled runtime ~30MB)
             4. Tap **Start** to run the server
             5. Use the **Browser** tab to view your site
 
