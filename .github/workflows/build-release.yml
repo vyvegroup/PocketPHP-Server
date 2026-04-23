@@ -57,7 +57,7 @@ jobs:
         env:
           TERMUX_INDEX: "https://packages.termux.dev/apt/termux-main/dists/stable/main/binary-aarch64/Packages.gz"
         run: |
-          sudo apt-get install -y xz-utils zstd patchelf 2>/dev/null || true
+          sudo apt-get install -y xz-utils zstd patchelf python3-zstandard 2>/dev/null || true
           
           WORKDIR=/tmp/php-build
           rm -rf "$WORKDIR" && mkdir -p "$WORKDIR"/{tmp,bin,lib}
@@ -69,9 +69,9 @@ jobs:
           # Download and parse the package index
           curl -fsSL --max-time 60 "$TERMUX_INDEX" | gunzip > packages.txt 2>/dev/null
           
-          # Python script to resolve deps and download
+          # Python script to resolve deps, download and extract
           python3 << 'PYEOF'
-          import os, re, subprocess, sys
+          import os, re, subprocess, sys, tarfile, io, struct, gzip, zlib, lzma
           
           def parse_packages(idx_file):
               pkgs = {}
@@ -85,7 +85,6 @@ jobs:
                           current["Filename"] = line[10:]
                       elif line.startswith("Depends: "):
                           deps = line[9:]
-                          # Parse depends, strip version info
                           current["Depends"] = [d.strip().split()[0] for d in deps.split(",")]
                       elif line == "" and current.get("Package"):
                           pkgs[current["Package"]] = current
@@ -108,84 +107,134 @@ jobs:
                   resolve_deps(dep, pkgs, resolved, visited)
               resolved.append(pkg_name)
           
-          pkgs = parse_packages("packages.txt")
+          def extract_deb(deb_path, dest_dir):
+              """Extract .deb file (ar archive) using pure Python"""
+              with open(deb_path, 'rb') as f:
+                  magic = f.read(8)
+                  if magic != b'!<arch>\n':
+                      print(f"    WARN: Not a valid ar archive: {deb_path}")
+                      return False
+                  
+                  members = []
+                  while True:
+                      header = f.read(60)
+                      if len(header) < 60:
+                          break
+                      name = header[0:16].decode().strip()
+                      size_str = header[48:58].decode().strip()
+                      size = int(size_str)
+                      data = f.read(size)
+                      if len(data) < size:
+                          f.read(1)  # padding
+                      if name in ('data.tar.xz', 'data.tar.gz', 'data.tar.bz2', 'data.tar.zst', 'data.tar.lz4', 'data.tar'):
+                          print(f"    Found: {name} ({size} bytes)")
+                          try:
+                              if name == 'data.tar.xz':
+                                  import lzma
+                                  tar_data = lzma.decompress(data)
+                                  tf = tarfile.open(fileobj=io.BytesIO(tar_data))
+                              elif name == 'data.tar.gz':
+                                  tar_data = gzip.decompress(data)
+                                  tf = tarfile.open(fileobj=io.BytesIO(tar_data))
+                              elif name == 'data.tar.bz2':
+                                  tar_data = data  # tarfile handles bz2
+                                  tf = tarfile.open(fileobj=io.BytesIO(data))
+                              elif name == 'data.tar.zst':
+                                  import zstandard as zstd
+                                  tar_data = zstd.ZstdDecompressor().decompress(data)
+                                  tf = tarfile.open(fileobj=io.BytesIO(tar_data))
+                              else:
+                                  tf = tarfile.open(fileobj=io.BytesIO(data))
+                              tf.extractall(dest_dir)
+                              tf.close()
+                              print(f"    Extracted OK")
+                              return True
+                          except Exception as e:
+                              print(f"    Extract {name} failed: {e}")
+                              # Fallback: try as raw tar
+                              try:
+                                  tf = tarfile.open(fileobj=io.BytesIO(data))
+                                  tf.extractall(dest_dir)
+                                  tf.close()
+                                  print(f"    Fallback raw tar OK")
+                                  return True
+                              except:
+                                  pass
+                  return False
           
-          # Resolve PHP and all its dependencies
+          pkgs = parse_packages("packages.txt")
           order = []
           resolve_deps("php", pkgs, order)
           print(f"  Packages to download: {len(order)}")
           
-          # Download each package
-          base_url = os.environ.get("BASE_URL", "https://packages.termux.dev/apt/termux-main")
+          base_url = os.environ.get("BASE_URL")
+          os.makedirs("tmp", exist_ok=True)
+          
           for pkg_name in order:
               pkg = pkgs.get(pkg_name)
               if not pkg or "Filename" not in pkg:
-                  print(f"  SKIP: {pkg_name} (no filename)")
                   continue
               filename = pkg["Filename"]
               url = f"{base_url}/{filename}"
               dest = f"tmp/{filename.split('/')[-1]}"
-              print(f"  GET {filename.split('/')[-1]}...")
               result = subprocess.run(["curl", "-fsSL", "--max-time", "120", "-o", dest, url],
                                     capture_output=True, text=True)
               if result.returncode == 0:
                   size = os.path.getsize(dest)
-                  print(f"       OK ({size//1024}KB)")
+                  print(f"  DL {filename.split('/')[-1][:40]:40s} {size//1024:5d}KB")
               else:
-                  print(f"       FAIL: {result.stderr[:80]}")
+                  print(f"  FAIL {filename.split('/')[-1][:40]:40s}")
           
-          print(f"\nTotal downloads: {len([f for f in os.listdir('tmp') if f.endswith('.deb')])}")
+          print(f"\n=== Extracting {len([f for f in os.listdir('tmp') if f.endswith('.deb')])} packages ===")
+          os.makedirs("src", exist_ok=True)
+          for deb in sorted(os.listdir("tmp")):
+              if not deb.endswith(".deb"):
+                  continue
+              print(f"  Extract {deb[:50]:50s}...", end=" ")
+              ok = extract_deb(f"tmp/{deb}", "src")
+              if ok:
+                  print("OK")
+              else:
+                  print("SKIP")
+          
+          # Find Termux prefix
+          prefix = None
+          for root, dirs, files in os.walk("src"):
+              if "com.termux" in root and root.endswith("usr"):
+                  prefix = root
+                  break
+          if not prefix:
+              for root, dirs, files in os.walk("src"):
+                  if "bin/php" in files:
+                      prefix = os.path.dirname(os.path.join(root, "bin"))
+                      break
+          
+          print(f"\nPrefix: {prefix}")
+          os.makedirs("bin", exist_ok=True)
+          os.makedirs("lib", exist_ok=True)
+          
+          if prefix:
+              php_bin = os.path.join(prefix, "bin", "php")
+              if os.path.isfile(php_bin):
+                  import shutil
+                  shutil.copy2(php_bin, "bin/php")
+                  os.chmod("bin/php", 0o755)
+                  print(f"PHP binary: {os.path.getsize('bin/php')//1024}KB")
+              
+              lib_dir = os.path.join(prefix, "lib")
+              if os.path.isdir(lib_dir):
+                  count = 0
+                  for f in os.listdir(lib_dir):
+                      if f.endswith(".so"):
+                          shutil.copy2(os.path.join(lib_dir, f), f"lib/{f}")
+                          count += 1
+                  print(f"Libraries: {count} files")
+          else:
+              print("ERROR: No prefix found!")
+              for root, dirs, files in os.walk("src", depth=4):
+                  for f in files[:20]:
+                      print(f"  {os.path.join(root, f)}")
           PYEOF
-          
-          echo ""
-          echo "=== Extracting packages ==="
-          
-          for deb in tmp/*.deb; do
-            [ -f "$deb" ] || continue
-            name=$(basename "$deb")
-            cd "$WORKDIR/tmp"
-            ar x "$name" 2>/dev/null || continue
-            extracted=0
-            for fmt in xz zst gz bz2 lz4; do
-              if [ -f "data.tar.$fmt" ]; then
-                case $fmt in
-                  xz) tar xJf data.tar.xz -C "$WORKDIR" 2>/dev/null ;;
-                  zst) zstd -dqf data.tar.zst -o data.tar 2>/dev/null && tar xf data.tar -C "$WORKDIR" 2>/dev/null ;;
-                  gz) tar xzf data.tar.gz -C "$WORKDIR" 2>/dev/null ;;
-                  bz2) tar xjf data.tar.bz2 -C "$WORKDIR" 2>/dev/null ;;
-                  lz4) lz4 -dqf data.tar.lz4 data.tar 2>/dev/null && tar xf data.tar -C "$WORKDIR" 2>/dev/null ;;
-                esac
-                if [ $? -eq 0 ]; then extracted=1; break; fi
-              fi
-            done
-            if [ $extracted -eq 0 ]; then
-              tar xf data.tar.* -C "$WORKDIR" 2>/dev/null
-            fi
-            rm -f data.tar.* debian-binary control.tar.* "$name"
-            cd "$WORKDIR"
-          done
-          
-          echo ""
-          echo "=== Collecting PHP binary and libraries ==="
-          
-          # The extracted structure is: data/data/com.termux/files/usr/
-          PREFIX=$(find . -maxdepth 8 -type d -name "usr" -path "*/com.termux/*" | head -1)
-          [ -z "$PREFIX" ] && PREFIX=$(find . -maxdepth 8 -type d -name "usr" | head -1)
-          echo "Prefix: $PREFIX"
-          
-          if [ -n "$PREFIX" ]; then
-            # Copy PHP binary
-            for f in "$PREFIX"/bin/php; do
-              [ -f "$f" ] && cp "$f" bin/ && chmod +x bin/php && echo "PHP binary: $(du -h bin/php | cut -f1)"
-            done
-            
-            # Copy ALL .so files
-            find "$PREFIX"/lib -name "*.so" -type f 2>/dev/null | while read f; do cp "$f" lib/; done
-            echo "Libraries: $(ls lib/*.so 2>/dev/null | wc -l) files ($(du -sh lib | cut -f1))"
-          else
-            echo "ERROR: No Termux prefix found"
-            find . -type f | head -10
-          fi
           
           echo ""
           echo "=== Patching binary ==="
