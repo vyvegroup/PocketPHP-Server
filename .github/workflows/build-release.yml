@@ -206,7 +206,7 @@ jobs:
           if not prefix:
               for root, dirs, files in os.walk("src"):
                   if "bin/php" in files:
-                      prefix = os.path.dirname(os.path.join(root, "bin"))
+                      prefix = os.path.join(root, "bin")
                       break
           
           print(f"\nPrefix: {prefix}")
@@ -231,9 +231,14 @@ jobs:
                   print(f"Libraries: {count} files")
           else:
               print("ERROR: No prefix found!")
-              for root, dirs, files in os.walk("src", depth=4):
-                  for f in files[:20]:
+              shown = 0
+              for root, dirs, files in os.walk("src"):
+                  for f in files:
                       print(f"  {os.path.join(root, f)}")
+                      shown += 1
+                      if shown > 20:
+                          print("  ...")
+                          break
           PYEOF
           
           echo ""
